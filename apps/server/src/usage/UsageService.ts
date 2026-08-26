@@ -37,6 +37,7 @@ import { ServerConfig } from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
+import { listOpenCodeDatabaseFiles, readOpenCodeRecords } from "./opencodeTranscriptReader.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
@@ -218,10 +219,14 @@ export const make = Effect.gen(function* () {
     const claudeHome = yield* resolveClaudeHomePath(settings.providers.claudeAgent);
     const claudeDir = yield* resolveClaudeTranscriptDir(claudeHome);
     const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
+    // OpenCode keeps no T3-visible home setting; its store follows XDG.
+    const opencodeDataHome =
+      process.env.XDG_DATA_HOME?.trim() || path.join(NodeOS.homedir(), ".local", "share");
 
     return [
       { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
+      { provider: "opencode" as const, dir: path.join(opencodeDataHome, "opencode") },
     ];
   });
 
@@ -277,7 +282,11 @@ export const make = Effect.gen(function* () {
         return cached.records;
       }
 
-      const parsed = yield* Effect.promise(() => readTranscriptRecords(filePath, provider));
+      const parsed = yield* Effect.promise(() =>
+        provider === "opencode"
+          ? readOpenCodeRecords(filePath)
+          : readTranscriptRecords(filePath, provider),
+      );
       // A read failure is not an empty transcript: caching it under this
       // (size, mtime) would silently drop the file's usage until it changes.
       if (parsed === null) return [];
@@ -373,7 +382,12 @@ export const make = Effect.gen(function* () {
       }
 
       walkedRoots.push(dir);
-      const files = yield* Effect.promise(() => listTranscriptFiles(dir, windowStartMs));
+      // OpenCode keeps every message in one sqlite database rather than a
+      // directory of transcripts, so it contributes at most one pseudo-file.
+      const files =
+        provider === "opencode"
+          ? listOpenCodeDatabaseFiles(dir, windowStartMs)
+          : yield* Effect.promise(() => listTranscriptFiles(dir, windowStartMs));
       let scannedFiles = 0;
       let skippedFiles = 0;
       // Distinct per directory. Buckets carry per-cell session counts, but a

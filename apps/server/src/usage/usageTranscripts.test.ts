@@ -4,6 +4,7 @@ import {
   initialCodexScanState,
   parseClaudeLine,
   parseCodexLine,
+  parseOpenCodeMessage,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -247,5 +248,94 @@ describe("totalTokens", () => {
         reasoningTokens: 25,
       }),
     ).toBe(100);
+  });
+});
+
+/** Shaped after a real OpenCode `message` row payload. */
+function opencodeMessage(overrides: {
+  input?: number;
+  output?: number;
+  reasoning?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cost?: number;
+  modelID?: string;
+  createdMs?: number;
+}): object {
+  return {
+    role: "assistant",
+    mode: "build",
+    agent: "build",
+    cost: overrides.cost ?? 0,
+    tokens: {
+      // OpenCode's own total treats reasoning as disjoint from output.
+      total:
+        (overrides.input ?? 0) +
+        (overrides.output ?? 0) +
+        (overrides.reasoning ?? 0) +
+        (overrides.cacheRead ?? 0) +
+        (overrides.cacheWrite ?? 0),
+      input: overrides.input ?? 0,
+      output: overrides.output ?? 0,
+      reasoning: overrides.reasoning ?? 0,
+      cache: { write: overrides.cacheWrite ?? 0, read: overrides.cacheRead ?? 0 },
+    },
+    modelID: overrides.modelID ?? "claude-fable-5",
+    providerID: "anthropic",
+    time: { created: overrides.createdMs ?? 1_780_114_618_934, completed: 1_780_114_624_274 },
+    finish: "stop",
+  };
+}
+
+describe("parseOpenCodeMessage", () => {
+  it("extracts token totals and trusts the stored cost", () => {
+    const record = parseOpenCodeMessage(
+      opencodeMessage({
+        input: 8505,
+        output: 178,
+        reasoning: 64,
+        cacheRead: 1200,
+        cacheWrite: 300,
+        cost: 0.042,
+      }),
+      "ses_123",
+    );
+
+    expect(record).not.toBeNull();
+    expect(record?.provider).toBe("opencode");
+    expect(record?.model).toBe("claude-fable-5");
+    expect(record?.sessionId).toBe("ses_123");
+    expect(record?.totals).toEqual({
+      uncachedInputTokens: 8505,
+      cachedInputTokens: 1200,
+      cacheCreationTokens: 300,
+      // Reasoning is disjoint from output in the store, so output absorbs it
+      // to reconcile with OpenCode's own grand total.
+      outputTokens: 178 + 64,
+      reasoningTokens: 64,
+    });
+    expect(record?.reportedCostUsd).toBe(0.042);
+    // One row is one billed request; there is nothing to de-duplicate.
+    expect(record?.dedupeKey).toBeNull();
+  });
+
+  it("treats a stored zero cost as a real answer from a free provider", () => {
+    const record = parseOpenCodeMessage(opencodeMessage({ input: 10, output: 5 }), "ses_1");
+
+    expect(record?.reportedCostUsd).toBe(0);
+  });
+
+  it("drops user rows, rows without tokens, unknown models, and empty totals", () => {
+    const user = { ...opencodeMessage({ input: 10, output: 5 }), role: "user" };
+    expect(parseOpenCodeMessage(user, "ses_1")).toBeNull();
+
+    const noTokens = { ...opencodeMessage({ input: 10, output: 5 }), tokens: undefined };
+    expect(parseOpenCodeMessage(noTokens, "ses_1")).toBeNull();
+
+    const noModel = opencodeMessage({ modelID: "" });
+    expect(parseOpenCodeMessage(noModel, "ses_1")).toBeNull();
+
+    const empty = opencodeMessage({});
+    expect(parseOpenCodeMessage(empty, "ses_1")).toBeNull();
   });
 });
