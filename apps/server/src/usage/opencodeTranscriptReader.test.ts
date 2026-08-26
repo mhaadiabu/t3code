@@ -54,6 +54,8 @@ beforeAll(() => {
   database
     .prepare("INSERT INTO message VALUES (?, ?, ?)")
     .run("msg_3", "ses_b", messageData({ output: 5 }));
+  // A malformed payload must cost its own row, never the whole scan.
+  database.prepare("INSERT INTO message VALUES (?, ?, ?)").run("msg_4", "ses_c", "not json {");
 });
 
 afterAll(() => {

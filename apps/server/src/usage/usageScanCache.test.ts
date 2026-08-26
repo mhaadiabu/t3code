@@ -50,6 +50,26 @@ describe("scan cache round trip", () => {
     expect(restored.get("/b.jsonl")).toEqual(original.get("/b.jsonl"));
   });
 
+  it("restores opencode entries so a restart does not rescan the store", () => {
+    const original: ScanCache = new Map([
+      [
+        "/home/u/.local/share/opencode/opencode.db",
+        {
+          size: 40,
+          mtimeMs: 300,
+          provider: "opencode",
+          records: [record({ provider: "opencode", dedupeKey: null })],
+        },
+      ],
+    ]);
+
+    const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
+
+    expect(restored.get("/home/u/.local/share/opencode/opencode.db")).toEqual(
+      original.get("/home/u/.local/share/opencode/opencode.db"),
+    );
+  });
+
   it("interns repeated model and session strings", () => {
     const encoded = encodeScanCache(
       cacheWith([["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:" }), record()]]]),

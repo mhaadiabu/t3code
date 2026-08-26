@@ -84,12 +84,16 @@ export async function readOpenCodeRecords(dbPath: string): Promise<readonly Usag
 
   try {
     // JSON1 extraction prunes user messages and error stubs before their
-    // (potentially large) `data` payloads reach JavaScript.
+    // (potentially large) `data` payloads reach JavaScript. json_valid guards
+    // the extraction: a malformed row must cost itself, not throw out of the
+    // iterator and void the whole scan.
     const statement = database.prepare(
       `SELECT session_id, data FROM message
-       WHERE json_extract(data, '$.role') = 'assistant'
+       WHERE json_valid(data)
+         AND json_extract(data, '$.role') = 'assistant'
          AND json_extract(data, '$.tokens') IS NOT NULL`,
     );
+    let scanned = 0;
     for (const row of statement.iterate()) {
       try {
         const record = parseOpenCodeMessage(JSON.parse(String(row.data)), String(row.session_id));
@@ -97,6 +101,10 @@ export async function readOpenCodeRecords(dbPath: string): Promise<readonly Usag
       } catch {
         // A malformed row drops itself rather than failing the scan.
       }
+      // The sqlite iteration is fully synchronous, unlike the readline walk
+      // over JSONL transcripts. Yield periodically so a cold scan of a large
+      // store cannot stall the server's other requests.
+      if (++scanned % 2048 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
     }
   } catch {
     return null;
